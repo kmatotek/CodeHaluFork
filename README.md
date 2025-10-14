@@ -10,7 +10,7 @@ docker compose build
 
 Start a container shell:
 ```bash
-docker compose run --rm codehalu-eval /bin/bash
+docker compose run codehalu-eval /bin/bash
 ```
 
 Run the evaluation manually inside the container:

@@ -6,10 +6,8 @@ import numpy as np
 from tqdm import tqdm
 from transformers import AutoTokenizer
 from testing_utils import run_test
-import os
+
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
-
 TIMEOUT = 30
 
 # -----------------------------
@@ -72,9 +70,35 @@ def add_error(errors_dict, error_name, error_value):
     return errors_dict
 
 
+# -----------------------------
+# Flatten helpers
+# -----------------------------
+def flatten_error(err_list):
+    if not err_list or len(err_list) == 0:
+        return {"name": "EvaluationError", "value": "No error info"}
+    first = err_list[0]
+    if isinstance(first, list) and len(first) > 0:
+        return first[0]
+    elif isinstance(first, dict):
+        return first
+    else:
+        return {"name": "EvaluationError", "value": str(first)}
+
+
+def flatten_result(res_list):
+    if not res_list or len(res_list) == 0:
+        return -1
+    first = res_list[0]
+    if isinstance(first, list) and len(first) > 0:
+        return first[0]
+    return first
+
+
+# -----------------------------
+# Evaluation function
+# -----------------------------
 def check_correctness(sample, generation, timeout, debug=True):
     """Safely run a generated program against test cases with a timeout."""
-
     def _temp_run(sample, generation, debug, result, error):
         res, err = run_test(sample, test=generation, debug=debug)
         result.append(res)
@@ -91,14 +115,13 @@ def check_correctness(sample, generation, timeout, debug=True):
     if p.is_alive():
         p.kill()
 
-    if not result:
+    # Normalize empty or malformed results
+    if not result or len(result) == 0 or result[0] is None:
         in_outs = json.loads(sample["input_output"])
         result = [[-1 for _ in range(len(in_outs["inputs"]))]]
         error = [
             [{"name": "TimeError", "value": "global timeout"} for _ in range(len(in_outs["inputs"]))]
         ]
-        if debug:
-            print("⚠️ Global timeout reached")
 
     return result[0], error[0]
 
@@ -107,7 +130,6 @@ def check_correctness(sample, generation, timeout, debug=True):
 # Load generation file
 # -----------------------------
 def load_generation(input_file):
-    """Load line-delimited JSONL file of converted generations."""
     generations = {}
     in_out = {}
     data = []
@@ -140,7 +162,6 @@ def evaluate_generations(generations, samples, in_out, debug=False):
         if not sample:
             continue
 
-        original_input_output = sample["input_output"]
         input_output = in_out[task_id]
 
         results[task_id] = {}
@@ -149,6 +170,8 @@ def evaluate_generations(generations, samples, in_out, debug=False):
         for o_idx, o in enumerate(problem_generations):
             key = json.dumps(input_output[o_idx])
             curr_res = [-2]
+            curr_err = [{"name": "EvaluationError", "value": "Unknown"}]
+
             try:
                 token_len = tokenizer.tokenize(o)
                 if len(token_len) >= 1300:
@@ -157,31 +180,31 @@ def evaluate_generations(generations, samples, in_out, debug=False):
                 else:
                     curr_res, curr_err = check_correctness(sample, o, timeout=TIMEOUT, debug=debug)
 
-                if debug:
-                    print(f"✓ Evaluated task {task_id}, output #{o_idx}")
-
-                # Clean numpy types
-                fixed = []
+                # Fix numpy types
+                fixed_res = []
                 for e in curr_res:
                     if isinstance(e, np.ndarray):
                         e = e.item(0)
                     if isinstance(e, np.bool_):
                         e = bool(e)
-                    fixed.append(e)
-                curr_res = fixed
+                    fixed_res.append(e)
+                curr_res = fixed_res
+
             except Exception as e:
                 if debug:
                     print(f"❌ Evaluation failed: {repr(e)}")
                 curr_err = [{"name": "RuntimeError", "value": str(e)}]
+
             finally:
-                results[task_id][key] = [curr_res]
-                errors[task_id][key] = [curr_err]
+                # Normalize always
+                results[task_id][key] = [curr_res] if isinstance(curr_res, list) else [[curr_res]]
+                errors[task_id][key] = [curr_err] if isinstance(curr_err, list) else [[curr_err]]
 
     return results, errors
 
 
 # -----------------------------
-# Main logic
+# Main
 # -----------------------------
 def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate code generations.")
@@ -202,45 +225,58 @@ def main(args):
     total_errors = set()
     new_id = 0
     os.makedirs("evaluated_results", exist_ok=True)
+    missing_tasks = []
 
-    for task_id, error_map in errors.items():
-        for key, err_list in error_map.items():
-            err_entry = err_list[0][0]
-            result_entry = results[task_id][key][0][0]
-            sample = next(s for s in samples if s["task_id"] == task_id)
-            input_output = json.loads(key)
+    for sample in samples:
+        task_id = sample["task_id"]
+        input_outputs = in_out[task_id]
 
-            # Determine error type
-            if err_entry is None and (result_entry is False or result_entry < 0):
-                err_entry = {"name": "Logic_Deviation", "value": "Logic_Deviation"}
-            elif err_entry is None and (result_entry is True or result_entry > 0):
+        for key_idx, key_json in enumerate(input_outputs):
+            key = json.dumps(key_json)
+            err_list = errors.get(task_id, {}).get(key, [])
+            res_list = results.get(task_id, {}).get(key, [])
+
+            if not err_list:
+                missing_tasks.append(task_id)
+
+            err_entry = flatten_error(err_list)
+            res_entry = flatten_result(res_list)
+
+            # Handle correct vs error
+            if err_entry is None and (res_entry is True or res_entry > 0):
                 err_entry = {"name": "Correct", "value": "Correct"}
-            elif err_entry["name"] in ["TimeError", "TimeoutException"]:
-                err_entry = {"name": "Timeout", "value": "Timeout"}
+            elif err_entry is None:
+                err_entry = {"name": "EvaluationError", "value": "Unknown"}
 
             new_data = {
                 "id": new_id,
                 "task_id": task_id,
                 "prompt": sample["prompt"],
-                "input": input_output["inputs"][0],
-                "output": input_output["outputs"][0],
-                "code": sample["deal_response"],
+                "input": key_json["inputs"][0] if key_json.get("inputs") and len(key_json["inputs"]) > 0 else "NO_INPUT",
+                "output": key_json["outputs"][0] if key_json.get("outputs") and len(key_json["outputs"]) > 0 else "NO_OUTPUT",
+                "code": sample.get("deal_response", ""),
                 "error_type": err_entry,
             }
+
 
             with open(f"evaluated_results/{gen_file_basename}_data.json", "a") as file:
                 json.dump(new_data, file)
                 file.write("\n")
-            new_id += 1
 
             error_name = err_entry["name"]
             error_value = err_entry["value"]
             errors_dict = add_error(errors_dict, error_name, error_value)
             total_errors.add(error_name)
+            new_id += 1
+
+    # Save missing tasks if any
+    if missing_tasks:
+        with open(f"evaluated_results/{gen_file_basename}_missing_tasks.json", "w") as f:
+            json.dump(list(set(missing_tasks)), f)
 
     errors_dict = serialize_errors(errors_dict)
     count = 0
-    for _, err_type in programming_halus[halu_type].items():
+    for _, err_type in programming_halus.get(halu_type, {}).items():
         count += errors_dict.get(err_type, {}).get("count", 0)
 
     halu_percentage = round((count / len(samples)) * 100, 2)
@@ -251,6 +287,10 @@ def main(args):
 
     with open(f"evaluated_results/{gen_file_basename}_errors_dict.json", "w") as json_file:
         json.dump(errors_dict, json_file, indent=4)
+
+    print(f"\n✅ Evaluation complete. Data saved → evaluated_results/{gen_file_basename}_data.json")
+    if missing_tasks:
+        print(f"⚠️ Missing tasks saved → evaluated_results/{gen_file_basename}_missing_tasks.json")
 
 
 if __name__ == "__main__":

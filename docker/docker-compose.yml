@@ -1,0 +1,19 @@
+services:
+  codehalu-eval:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: codehalu_eval
+    volumes:
+      - ..:/app
+    working_dir: /app
+    environment:
+      - TOKENIZERS_PARALLELISM=false
+    #command: >
+      #python3 eval.py
+     #--halu_type Logic_Deviation
+      #--generation_file data_small.jsonl
+    deploy:
+      resources:
+        limits:
+          memory: 8G

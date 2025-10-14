@@ -3,13 +3,12 @@ FROM python:3.10-slim
 # Disable tokenizer parallelism warning
 ENV TOKENIZERS_PARALLELISM=false
 
-# Set working directory
+# Set working directory inside the container
 WORKDIR /app
 
-# Copy your code
-COPY . .
+# Copy everything from the build context (the project root)
+COPY . /app
 
-# Install Python dependencies
+# Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Default command (can be overridden in docker-compose)

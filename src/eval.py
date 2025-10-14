@@ -208,14 +208,14 @@ def evaluate_generations(generations, samples, in_out, debug=False):
 # -----------------------------
 def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate code generations.")
-    parser.add_argument("--halu_type", type=str, required=True)
+    #parser.add_argument("--halu_type", type=str, required=True)
     parser.add_argument("--generation_file", type=str, required=True)
     return parser.parse_args()
 
 
 def main(args):
     generation_file = args.generation_file
-    halu_type = args.halu_type
+    #halu_type = args.halu_type
     gen_file_basename = os.path.basename(generation_file)
 
     generations, samples, in_out = load_generation(generation_file)
@@ -275,15 +275,13 @@ def main(args):
             json.dump(list(set(missing_tasks)), f)
 
     errors_dict = serialize_errors(errors_dict)
-    count = 0
-    for _, err_type in programming_halus.get(halu_type, {}).items():
-        count += errors_dict.get(err_type, {}).get("count", 0)
+    
+    print(f"\n📊 Total Samples: {len(samples)}")
+    print("\nTop Error Types:")
+    for err, stats in sorted(errors_dict.items(), key=lambda x: x[1]["count"], reverse=True)[:10]:
+        print(f"  {err}: {stats['count']}")
 
-    halu_percentage = round((count / len(samples)) * 100, 2)
-    print(f"\n🧠 Halu Type: {halu_type}")
-    print(f"🔢 Halu Count: {count}")
-    print(f"📊 Total Samples: {len(samples)}")
-    print(f"💯 Halu Percentage: {halu_percentage}%")
+
 
     with open(f"evaluated_results/{gen_file_basename}_errors_dict.json", "w") as json_file:
         json.dump(errors_dict, json_file, indent=4)

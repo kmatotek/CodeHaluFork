@@ -16,7 +16,7 @@ docker compose run codehalu-eval /bin/bash
 Run the evaluation manually inside the container:
 
 ```bash
-python3 eval.py --halu_type Logic_Deviation --generation_file foo.jsonl
+python3 src/eval.py --halu_type Logic_Deviation --generation_file foo.jsonl
 ```
 
 Full list of hallucination types: 
